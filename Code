@@ -1,0 +1,144 @@
+import pandas as pd
+import uuid
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder, MultiLabelBinarizer
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score
+from PIL import Image, ImageDraw, ImageFont, ImageOps
+from datetime import datetime
+import numpy as np
+import textwrap
+import matplotlib.pyplot as plt
+
+# === Step 1: Load and Prepare Data ===
+print("🔄 Loading and preparing medical data...")
+df = pd.read_csv("symptom_checker.csv")
+df.dropna(subset=["Symptoms", "Predicted Disease"], inplace=True) #Remove rows with missing symptoms or diseases
+df["Symptom List"] = df["Symptoms"].str.lower().str.strip().str.split(",")
+
+# Encode features and labels
+mlb = MultiLabelBinarizer() #list of symptoms into binary
+X = mlb.fit_transform(df["Symptom List"])
+le = LabelEncoder() #disease names into numeric
+y = le.fit_transform(df["Predicted Disease"]) 
+
+# Split data 80 training 20 testing
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42) #random_state=42; ensures reproducibility
+
+# === Step 2: Train Models ===
+print("\n🤖 Training diagnostic models...")
+clf_dt = DecisionTreeClassifier(max_depth=12, random_state=42) #max_depth=12; limits tree depth
+clf_dt.fit(X_train, y_train)
+
+clf_rf = RandomForestClassifier(n_estimators=100, random_state=42) #100 tress in forest
+clf_rf.fit(X_train, y_train)
+
+# === Step 3: Patient Input ===
+print("\n🩺 Patient Information")
+patient_id = str(uuid.uuid4())[:8].upper() #short unique id of patient
+name = input("Full Name: ")
+age = input("Age: ") 
+gender = input("Gender (M/F): ").upper() 
+symptoms = [s.strip().lower() for s in input("Symptoms (comma-separated): ").split(",")] #symptoms from user into lower case
+
+# Filter valid symptoms
+valid_symptoms = [s for s in symptoms if s in mlb.classes_] #user input symptoms known.
+if not valid_symptoms:
+    print(f"\n⚠ No matching symptoms found. Known symptoms include: {', '.join(mlb.classes_[:10])}...") #not show few known examples and exit.
+    exit()
+
+# === Step 4: Generate Predictions ===
+X_patient = mlb.transform([valid_symptoms])
+
+# Decision Tree prediction                     #predict probabilities for diseases
+dt_proba = clf_dt.predict_proba(X_patient)
+dt_pred = le.inverse_transform([np.argmax(dt_proba)])[0] #argmax to disease with highest confidence
+dt_conf = dt_proba[0].max() * 100
+
+# Random Forest prediction               #back to original disease name multiply by 100 for %
+rf_proba = clf_rf.predict_proba(X_patient)
+rf_pred = le.inverse_transform([np.argmax(rf_proba)])[0]
+rf_conf = rf_proba[0].max() * 100
+
+# === Step 5: Display Model Comparison ===
+plt.figure(figsize=(10, 6))
+plt.suptitle("AI Diagnostic Model Comparison", fontweight='bold', y=0.98)
+plt.title(f"Patient: {name} | Symptoms: {', '.join(valid_symptoms)}", fontsize=10)
+
+data = {
+    'Decision Tree': {'confidence': dt_conf, 'prediction': dt_pred, 'color': '#1f77b4'},
+    'Random Forest': {'confidence': rf_conf, 'prediction': rf_pred, 'color': '#ff7f0e'}
+}
+
+bars = plt.bar(data.keys(), 
+              [v['confidence'] for v in data.values()],
+              color=[v['color'] for v in data.values()])
+
+# Annotate bars with confidence and prediction
+for bar, (model, values) in zip(bars, data.items()):
+    height = bar.get_height()
+    plt.text(bar.get_x() + bar.get_width()/2, height/2, 
+             f"{values['prediction']}\n({height:.1f}%)",
+             ha='center', va='center', color='white', fontweight='bold')
+
+plt.ylabel('Confidence (%)', fontweight='bold')
+plt.ylim(0, 110)
+plt.grid(axis='y', alpha=0.3)
+plt.tight_layout()
+plt.show()
+
+# === Step 6: Generate Medical Report ===
+print("\n📊 Generating medical report...")
+model_choice = input(f"Which model's diagnosis would you like to use? (1) DT [{dt_pred}, {dt_conf:.1f}%] or (2) RF [{rf_pred}, {rf_conf:.1f}%]: ")
+
+if model_choice == "2":
+    diagnosis, confidence = rf_pred, rf_conf
+    model_used = "Random Forest"
+else:
+    diagnosis, confidence = dt_pred, dt_conf
+    model_used = "Decision Tree"
+
+# Create professional report image
+img = Image.new('RGB', (1000, 700), color=(245, 245, 250))
+draw = ImageDraw.Draw(img)
+
+# Header
+draw.rectangle([(0, 0), (1000, 80)], fill=(30, 144, 255))
+draw.text((40, 40), "MEDICAL DIAGNOSIS REPORT", fill='white', 
+          font=ImageFont.truetype("arialbd.ttf", 28), anchor='lm')
+
+# Patient Info
+info_y = 120
+for label, value in [
+    ("Patient:", name), ("ID:", patient_id), ("Date:", datetime.now().strftime('%Y-%m-%d')),
+    ("Age/Sex:", f"{age}/{gender}"), ("Symptoms:", ', '.join(valid_symptoms))
+]:
+    draw.text((60, info_y), label, fill='dimgray', font=ImageFont.truetype("arial.ttf", 16))
+    draw.text((220, info_y), value, fill='black', font=ImageFont.truetype("arial.ttf", 16))
+    info_y += 40
+
+# Diagnosis
+draw.line([(40, info_y + 10), (960, info_y + 10)], fill='lightgray', width=2)
+info_y += 40
+draw.text((60, info_y), "PRIMARY DIAGNOSIS", fill=(30, 144, 255), 
+          font=ImageFont.truetype("arialbd.ttf", 20))
+
+severity_color = (220, 50, 50) if confidence >= 80 else (218, 165, 32) if confidence >= 50 else (50, 150, 50)
+for i, (label, value) in enumerate([
+    ("Diagnosis:", diagnosis),
+    ("Confidence:", f"{confidence:.1f}%"),
+    ("Severity:", "High" if confidence >= 80 else "Moderate" if confidence >= 50 else "Low"),
+    ("Model Used:", model_used)
+]):
+    draw.text((80, info_y + 50 + i*35), label, fill='dimgray', font=ImageFont.truetype("arial.ttf", 16))
+    draw.text((250, info_y + 50 + i*35), value, 
+              fill=severity_color if label == "Severity:" else 'black',
+              font=ImageFont.truetype("arial.ttf", 16))
+
+# Footer
+draw.text((500, 650), "Consult a physician for clinical evaluation", 
+          fill='gray', font=ImageFont.truetype("arial.ttf", 14), anchor='mm')
+
+img.save("diagnosis_report.jpg")
+print("✅ Report generated as diagnosis_report.jpg")
